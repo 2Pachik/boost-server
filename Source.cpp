@@ -47,7 +47,7 @@ void getFileData(std::string path, char* buff) {
     std::shared_ptr<FILE*> file = std::make_shared<FILE*>();
     int size = getFileSize(path);
 
-    if (*file.get() = fopen(path.data(), "rb")) { // =
+    if (*file.get() = fopen(path.data(), "rb")) {
         fread(buff, 1, size, *file.get());
         fclose(*file.get());
     }
