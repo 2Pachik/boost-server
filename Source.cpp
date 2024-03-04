@@ -2,7 +2,9 @@
 #define _SILENCE_EXPERIMENTAL_FILESYSTEM_DEPRECATION_WARNING
 #define BOOST_EXCEPTION_DISABLE
 #define BOOST_NO_EXCEPTION
+#define BOOST_ASIO_NO_EXCEPTIONS
 #define WIN32_LEAN_AND_MEAN
+#define NOMINMAX 
 
 #include "usage_headers/base64.h"
 #include "usage_headers/md5.h"
@@ -14,6 +16,7 @@
 #include <boost/config.hpp>
 #include <boost/thread.hpp>
 #include <boost/regex.hpp>
+#include <boost/throw_exception.hpp>
 #include <boost/property_tree/json_parser.hpp>
 #include <boost/algorithm/string/replace.hpp>
 #include <cstddef>
@@ -29,26 +32,26 @@
 #include <ctime>
 #include <stdexcept>
 
-std::size_t getFileSize(const std::string& path) {
-    std::ifstream file(path, std::ios::binary | std::ios::ate);
+bool checkFile(const std::string& path) {
+    std::ifstream file(path, std::ios::binary);
     if (!file) {
-        return 0;
+        file.close();
+        return false;
     }
-    std::size_t size = file.tellg();
     file.close();
-    return size;
+    return true;
 }
 
-void getFileData(std::string path, std::byte* buff) {
-
-    std::shared_ptr<FILE*> file = std::make_shared<FILE*>();
-    int size = getFileSize(path);
-
-    if (*file.get() = fopen(path.data(), "rb")) { // =
-        fread(buff, 1, size, *file.get());
-        fclose(*file.get());
-    }
-}
+//void getFileData(std::string path, std::byte* buff) {
+//
+//    std::shared_ptr<FILE*> file = std::make_shared<FILE*>();
+//    size_t size = getFileSize(path);
+//
+//    if (*file.get() = fopen(path.data(), "rb")) {
+//        fread(buff, 1, size, *file.get());
+//        fclose(*file.get());
+//    }
+//}
 
 std::string localPath() {
     WCHAR filename[MAX_PATH];
@@ -226,8 +229,7 @@ void clientHandle(std::shared_ptr<boost::asio::ip::tcp::socket> socket) {
         boost::beast::flat_buffer buffer;
         boost::beast::http::request <boost::beast::http::string_body> request;
         boost::beast::http::read(*socket.get(), buffer, request, ec);
-        std::cout << remoteEndp << " " << request.target() << std::endl;
-        //std::cout << request << std::endl;
+        std::cout << remoteEndp << " - " << request.target() << std::endl;
 
         if (!ec) {
             if (request.target() == "/Auth") {
@@ -257,7 +259,6 @@ void clientHandle(std::shared_ptr<boost::asio::ip::tcp::socket> socket) {
                     std::cout << e.what() << std::endl;
                 }
             }
-
             else if (request.target() == "/Directories") {
                 try {
                     bool authStatus = checkAuth(request, serverToken);
@@ -281,44 +282,44 @@ void clientHandle(std::shared_ptr<boost::asio::ip::tcp::socket> socket) {
                     std::cout << e.what() << std::endl;
                 }
             }
-
             else if (request.target() == "/Download") {
+                try {
+                    bool auth = checkAuth(request, serverToken);
+                    if (auth == true) {
+                        boost::property_tree::ptree pt;
+                        std::istringstream ss(request.body());
+                        boost::property_tree::json_parser::read_json(ss, pt);
+                        std::string filePath = pt.get<std::string>("Path");
 
-                bool authStatus = checkAuth(request, serverToken);
+                        //if (checkFile(filePath) == true) {
+                            boost::system::error_code ecReq;
+                            boost::beast::http::response_parser<boost::beast::http::file_body> res_parser;
+                            res_parser.body_limit((std::numeric_limits<std::uint64_t>::max)());
+                            res_parser.get().version(request.version());
+                            res_parser.get().set(boost::beast::http::field::server, "HTTP Server");
+                            res_parser.get().body().open(filePath.c_str(), boost::beast::file_mode::scan, ecReq);
+                            res_parser.get().prepare_payload();
+                            boost::beast::http::write(*socket.get(), res_parser.get(), ecReq);
 
-                if (authStatus == true) {
-                    boost::property_tree::ptree pt;
-                    std::istringstream ss(request.body());
-                    boost::property_tree::json_parser::read_json(ss, pt);
+                            std::cerr << ecReq.what() << std::endl;
+                        //}
 
-                    std::string filePath = pt.get<std::string>("Path");
-                    std::size_t size = 0;
-                    size = getFileSize(filePath);
-
-                    boost::property_tree::ptree pt_;
-                    pt_.put("Size", size);
-                    std::ostringstream responseBody;
-                    boost::property_tree::json_parser::write_json(responseBody, pt_);
-
-                    if (size > 0) {
-
-                        standartResponse(request, boost::beast::http::status::ok, responseBody.str(), *socket.get());
-
-                        std::shared_ptr<std::byte[]> data(new std::byte[size]);
-
-                        getFileData(filePath, data.get());
-
-                        socket.get()->write_some(boost::asio::buffer(data.get(), size));
+                        //else {
+                        //    standartResponse(request, boost::beast::http::status::not_found, "", *socket.get());
+                        //}
                     }
+
                     else {
-                        standartResponse(request, boost::beast::http::status::not_found, responseBody.str(), *socket.get());
+                        standartResponse(request, boost::beast::http::status::unauthorized, "", *socket.get());
                     }
                 }
-                else {
-                    standartResponse(request, boost::beast::http::status::unauthorized, "", *socket.get());
+                catch (std::exception& e) {
+                    std::cout << e.what() << std::endl;
+                }
+                catch (boost::system::system_error& e) {
+                    std::cout << e.what() << std::endl;
                 }
             }
-
             else
             {
                 standartResponse(request, boost::beast::http::status::bad_request, "", *socket.get());
@@ -378,6 +379,7 @@ int main(int argc, char* argv[]) {
     argumentsStatus = checkArguments(argc, argv);
 
     if (argumentsStatus == true) {
+        std::cout << "Server started at " << argv[1] << ":" << argv[2] << std::endl;
         boost::asio::io_context io_context;
         boost::asio::ip::tcp::endpoint ep(boost::asio::ip::address::from_string(argv[1]), std::stoi(argv[2]));
         int coresCount = std::thread::hardware_concurrency();
@@ -385,6 +387,7 @@ int main(int argc, char* argv[]) {
 
         while (true) {
             try {
+                io_context.run();
                 boost::asio::ip::tcp::acceptor acceptor(io_context, ep);
                 boost::system::error_code ec;
                 std::shared_ptr<boost::asio::ip::tcp::socket> socket = std::make_shared<boost::asio::ip::tcp::socket>(io_context);
